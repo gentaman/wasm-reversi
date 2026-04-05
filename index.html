@@ -4,31 +4,222 @@
     <meta charset="utf-8">
     <script src="wasm_exec.js"></script>
     <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .hidden { display: none; }
+
+        /* 設定画面 */
+        #setup { max-width: 400px; }
+        #setup h2 { margin-bottom: 20px; }
+        .setting-group { margin-bottom: 20px; }
+        .setting-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .setting-group select, .setting-group input[type="radio"] { margin-right: 10px; }
+        .radio-group { margin-top: 5px; }
+        .radio-group label { display: inline-block; margin-right: 15px; font-weight: normal; }
+        #startGame { padding: 10px 30px; font-size: 18px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 5px; }
+        #startGame:hover { background: #45a049; }
+
+        /* ゲーム画面 */
+        #game { }
+        #info { margin-bottom: 10px; }
+        #turn { font-size: 24px; font-weight: bold; }
+        #score { font-size: 18px; margin-top: 5px; color: #555; }
+        #gameOver { font-size: 28px; font-weight: bold; color: #d00; margin: 10px 0; }
+        #aiThinking { font-size: 18px; color: #f60; margin: 10px 0; }
+        #reset { padding: 10px 20px; font-size: 16px; cursor: pointer; margin-top: 10px; }
         .board { display: grid; grid-template-columns: repeat(8, 40px); gap: 2px; background: #333; width: fit-content; }
-        .cell { width: 40px; height: 40px; background: green; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .cell { width: 40px; height: 40px; background: green; display: flex; align-items: center; justify-content: center; cursor: pointer; position: relative; }
+        .cell.valid { background: #90EE90; }
+        .cell.valid::after {
+            content: '';
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.6);
+            border: 2px solid rgba(0, 0, 0, 0.3);
+        }
         .piece { width: 30px; height: 30px; border-radius: 50%; }
         .black { background: black; }
         .white { background: white; }
     </style>
 </head>
 <body>
-    <div id="board" class="board"></div>
+    <!-- 設定画面 -->
+    <div id="setup">
+        <h2>リバーシ - ゲーム設定</h2>
+
+        <div class="setting-group">
+            <label>ゲームモード:</label>
+            <div class="radio-group">
+                <label><input type="radio" name="mode" value="pvp" checked> 対人</label>
+                <label><input type="radio" name="mode" value="pvc"> 対コンピュータ</label>
+            </div>
+        </div>
+
+        <div class="setting-group" id="aiSettings" style="display:none;">
+            <label>あなたの色:</label>
+            <div class="radio-group">
+                <label><input type="radio" name="playerColor" value="1" checked> 黒（先攻）</label>
+                <label><input type="radio" name="playerColor" value="2"> 白（後攻）</label>
+            </div>
+        </div>
+
+        <div class="setting-group" id="handicapSettings" style="display:none;">
+            <label>ハンデ:</label>
+            <select id="handicap">
+                <option value="0">なし</option>
+                <option value="2">AIが2手パス</option>
+                <option value="4">AIが4手パス</option>
+                <option value="6">AIが6手パス</option>
+            </select>
+        </div>
+
+        <button id="startGame" onclick="startGame()">ゲーム開始</button>
+    </div>
+
+    <!-- ゲーム画面 -->
+    <div id="game" class="hidden">
+        <div id="info">
+            <div id="turn"></div>
+            <div id="score"></div>
+            <div id="aiThinking"></div>
+            <div id="gameOver"></div>
+        </div>
+        <div id="board" class="board"></div>
+        <button id="reset" onclick="backToSetup()">設定に戻る</button>
+    </div>
     <script>
         const go = new Go();
+        let wasmReady = false;
+
         WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject).then((result) => {
             go.run(result.instance);
-            render();
+            wasmReady = true;
         });
 
+        // 設定画面のUI制御
+        document.querySelectorAll('input[name="mode"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const isPVC = e.target.value === 'pvc';
+                document.getElementById('aiSettings').style.display = isPVC ? 'block' : 'none';
+                document.getElementById('handicapSettings').style.display = isPVC ? 'block' : 'none';
+            });
+        });
+
+        function startGame() {
+            if (!wasmReady) {
+                alert('ゲームを読み込み中です。もう少しお待ちください。');
+                return;
+            }
+
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            const playerColor = parseInt(document.querySelector('input[name="playerColor"]:checked')?.value || 1);
+            const handicap = parseInt(document.getElementById('handicap').value);
+
+            // ゲーム設定
+            if (mode === 'pvc') {
+                const aiColor = playerColor === 1 ? 2 : 1; // プレイヤーの逆
+                setGameConfig(aiColor, handicap);
+            } else {
+                setGameConfig(0, 0); // 対人モード
+            }
+
+            // ゲームをリセット
+            resetGame();
+
+            // 画面切り替え
+            document.getElementById('setup').classList.add('hidden');
+            document.getElementById('game').classList.remove('hidden');
+
+            // 描画
+            render();
+
+            // AIが先攻の場合は自動で打つ
+            if (isAITurn()) {
+                setTimeout(aiMove, 500);
+            }
+        }
+
+        function backToSetup() {
+            document.getElementById('game').classList.add('hidden');
+            document.getElementById('setup').classList.remove('hidden');
+        }
+
         function render() {
+            // スコアを表示
+            const score = getScore();
+            document.getElementById("score").textContent = `黒: ${score.black} | 白: ${score.white}`;
+
+            // 終局判定
+            const gameOver = isGameOver();
+            if (gameOver) {
+                let result = "";
+                if (score.black > score.white) {
+                    result = "黒の勝利！";
+                } else if (score.white > score.black) {
+                    result = "白の勝利！";
+                } else {
+                    result = "引き分け！";
+                }
+                document.getElementById("gameOver").textContent = `ゲーム終了 - ${result}`;
+                document.getElementById("turn").textContent = "";
+                document.getElementById("aiThinking").textContent = "";
+
+                // 盤面を描画（ハイライトなし）
+                const container = document.getElementById("board");
+                container.innerHTML = "";
+                const data = getBoard();
+                data.forEach((row, y) => {
+                    row.forEach((v, x) => {
+                        const cell = document.createElement("div");
+                        cell.className = "cell";
+                        if (v > 0) {
+                            const p = document.createElement("div");
+                            p.className = "piece " + (v === 1 ? "black" : "white");
+                            cell.appendChild(p);
+                        }
+                        container.appendChild(cell);
+                    });
+                });
+                return;
+            }
+
+            // ゲーム中の表示
+            document.getElementById("gameOver").textContent = "";
+            document.getElementById("aiThinking").textContent = "";
+            const turn = getTurn();
+            const turnText = turn === 1 ? "黒" : "白";
+            document.getElementById("turn").textContent = `手番: ${turnText}`;
+
+            // 置ける場所を取得
+            const validMoves = getValidMoves();
+            const validSet = new Set(validMoves.map(m => `${m.x},${m.y}`));
+
+            // 盤面を描画
             const container = document.getElementById("board");
             container.innerHTML = "";
-            const data = getBoard(); // Goの関数を呼び出し
+            const data = getBoard();
             data.forEach((row, y) => {
                 row.forEach((v, x) => {
                     const cell = document.createElement("div");
                     cell.className = "cell";
-                    cell.onclick = () => { pressCell(x, y); render(); };
+
+                    // 置ける場所をハイライト（AIのターンでない場合のみ）
+                    if (!isAITurn() && validSet.has(`${x},${y}`)) {
+                        cell.className += " valid";
+                    }
+
+                    cell.onclick = () => {
+                        if (!isAITurn()) {
+                            pressCell(x, y);
+                            render();
+                            // プレイヤーが打った後、AIのターンなら自動で打つ
+                            if (isAITurn() && !isGameOver()) {
+                                setTimeout(aiMove, 500);
+                            }
+                        }
+                    };
+
                     if (v > 0) {
                         const p = document.createElement("div");
                         p.className = "piece " + (v === 1 ? "black" : "white");
@@ -37,6 +228,38 @@
                     container.appendChild(cell);
                 });
             });
+        }
+
+        function aiMove() {
+            if (!isAITurn() || isGameOver()) {
+                return;
+            }
+
+            document.getElementById("aiThinking").textContent = "AIが考え中...";
+
+            setTimeout(() => {
+                const move = getAIMove();
+
+                if (move.pass) {
+                    // パス
+                    document.getElementById("aiThinking").textContent = "";
+                    render();
+                    // 再度AIのターンなら続ける
+                    if (isAITurn() && !isGameOver()) {
+                        setTimeout(aiMove, 500);
+                    }
+                } else {
+                    // AIが手を打つ
+                    pressCell(move.x, move.y);
+                    document.getElementById("aiThinking").textContent = "";
+                    render();
+
+                    // 再度AIのターンなら続ける（連続パスなど）
+                    if (isAITurn() && !isGameOver()) {
+                        setTimeout(aiMove, 500);
+                    }
+                }
+            }, 300);
         }
     </script>
 </body>
